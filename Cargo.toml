@@ -8,3 +8,8 @@ tokio = { version = "1.15.0", features = ["full"] }
 tui = "0.19"
 crossterm = "0.26.1"
 tungstenite = "0.18.0"
+reqwest = { version = "0.11.6", features = ["cookies", "json"] }
+serde_json = "1.0.95"
+reqwest_cookie_store = "0.5.0"
+scraper = "0.15.0"
+thiserror = "1.0.40"

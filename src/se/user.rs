@@ -14,7 +14,7 @@ pub struct User {
     cookies: Arc<CookieStoreMutex>,
     fkey: Option<String>,
     user_id: Option<u64>,
-    rooms: HashMap<u64, Room>
+    rooms: HashMap<u64, Room>,
 }
 
 impl User {
@@ -36,7 +36,8 @@ impl User {
         Self { client, cookies, fkey: None, user_id: None, rooms: HashMap::new() }
     }
 
-    pub async fn login(&mut self, email: &str, password: Option<&str>, host: &str) -> Result<(), SeError> {
+    pub async fn login(&mut self, email: &str, password: Option<&str>) -> Result<(), SeError> {
+        let host = "meta.stackexchange.com"; // Change if bork
         if !self.cookies.lock().unwrap().contains("stackexchange.com", "/", "acct") {
             let password = if let Some(password) = password {
                 password
@@ -141,7 +142,7 @@ impl User {
         Ok(())
     }
 
-    async fn get_id(&self) -> Result<u64, reqwest::Error> {
+    async fn get_id(&self) -> Result<u64, SeError> {
         let response = self.client.get("https://chat.stackexchange.com/chats/join/favorite")
             .send()
             .await?
@@ -157,10 +158,20 @@ impl User {
             .unwrap()
             .value()
             .attr("href")
-            .unwrap()
+            .unwrap();
+        let id = id_str
             .split("/")
             .nth(2)
-            .unwrap();
-        Ok(id_str.parse().unwrap())
+            .unwrap()
+            .parse();
+        return if let Ok(id) = id {
+            Ok(id)
+        } else {
+            if id_str.contains("login") {
+                Err(SeError::BadCredentials)
+            } else {
+                Err(SeError::Login(format!("Failed to get user id from '{}'", id_str)))
+            }
+        }
     }
 }

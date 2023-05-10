@@ -1,15 +1,18 @@
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::io;
-use cli_clipboard::{ClipboardContext, ClipboardProvider};
+use std::sync::{Arc, Mutex};
 
+use cli_clipboard::{ClipboardContext, ClipboardProvider};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use tui::backend::CrosstermBackend;
 use tui::Terminal;
 use tui_textarea::{Input, Key};
-use crate::input::TextInput;
 
+use crate::input::TextInput;
+use crate::se::User;
 use crate::ui::get_ui;
 
 mod se;
@@ -26,14 +29,20 @@ async fn main() -> io::Result<()> {
 
     terminal.clear()?;
 
-    let mut app = App {
-        input_fields: HashMap::new(),
-        status: Status::Login,
-        clipboard: ClipboardContext::new().unwrap()
-    };
+    let mut input_fields = HashMap::new();
+
+    let app = Arc::new(Mutex::new(
+        App {
+            status: Status::Email,
+            clipboard: ClipboardContext::new().unwrap(),
+            user: None,
+        }
+    ));
     loop {
-        terminal.draw(|f| get_ui(f, &mut app))?;
-        if handle_input(&mut app)? {
+        terminal.draw(|f| get_ui(f, app.clone(), &mut input_fields)).unwrap();
+        if let Some(new_fields) = handle_input(input_fields, app.clone()).await? {
+            input_fields = new_fields;
+        } else {
             break;
         }
     }
@@ -44,15 +53,18 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-pub struct App<'a> {
-    pub input_fields: HashMap<String, TextInput<'a>>,
+pub struct App {
     pub status: Status,
-    pub clipboard: ClipboardContext
+    pub clipboard: ClipboardContext,
+    pub user: Option<User>,
 }
 
-#[derive(PartialEq)]
+pub type AppRef = Arc<Mutex<App>>;
+
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub enum Status {
-    Login,
+    Email,
+    Password(String),
 }
 
 fn key_event_to_input(event: KeyEvent) -> Input {
@@ -80,18 +92,23 @@ fn key_event_to_input(event: KeyEvent) -> Input {
 }
 
 /// Returns true if the program should exit
-fn handle_input(app: &mut App) -> io::Result<bool> {
+async fn handle_input(fields: HashMap<String, TextInput<'_>>, app: AppRef)
+                      -> io::Result<Option<HashMap<String, TextInput<'_>>>> {
     if let Event::Key(key) = read()? {
         if key.kind != KeyEventKind::Release {
             let input = key_event_to_input(key);
-            for inp in app.input_fields.values_mut() {
+            let mut new_inputs = HashMap::new();
+            for (name, input_field) in fields.into_iter() {
                 let input = input.clone();
                 if let Input { key: Key::Char('c'), ctrl: true, .. } | Input { key: Key::Esc, .. } = input {
-                    return Ok(true);
+                    return Ok(None);
                 }
-                inp.input(input);
+                if let Some(new_input_field) = input_field.input(input, app.clone()).await {
+                    new_inputs.insert(name.clone(), new_input_field);
+                }
             }
+            return Ok(Some(new_inputs));
         }
     }
-    Ok(false)
+    Ok(Some(fields))
 }

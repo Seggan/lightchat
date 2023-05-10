@@ -1,23 +1,26 @@
+use std::fmt::{Debug, Formatter};
+use std::future::Future;
+use std::pin::Pin;
 use tui::style::Style;
-use tui::widgets::{Block, Widget};
 use tui_textarea::{Input, Key, TextArea};
-
-use crate::App;
+use crate::AppRef;
 
 pub struct TextInput<'a> {
     pub area: TextArea<'a>,
-    handler: Box<dyn FnMut(&str)>,
-    multiline: bool
+    handler: Box<dyn FnOnce(AppRef, String) -> Pin<Box<dyn Future<Output=()> + Send + 'static>> + Send>,
+    multiline: bool,
 }
 
 impl<'a> TextInput<'a> {
-    pub fn new(handler: impl FnMut(&str) + 'static) -> TextInput<'a> {
+    pub fn new<F>(handler: impl FnOnce(AppRef, String) -> F + Send + 'static) -> TextInput<'a>
+        where F: Future<Output=()> + Send + 'static
+    {
         let mut area = TextArea::default();
         area.set_cursor_line_style(Style::default());
         TextInput {
             area,
-            handler: Box::new(handler),
-            multiline: false
+            handler: Box::new(move |app, text| Box::pin(handler(app, text))),
+            multiline: false,
         }
     }
 
@@ -26,7 +29,7 @@ impl<'a> TextInput<'a> {
         self
     }
 
-    pub fn input(&mut self, input: Input) {
+    pub async fn input(mut self, input: Input, app: AppRef) -> Option<TextInput<'a>> {
         match input {
             Input { key: Key::Char('v'), ctrl: true, .. } => {
                 if let Ok(pasted) = cli_clipboard::get_contents() {
@@ -43,10 +46,18 @@ impl<'a> TextInput<'a> {
                 if ctrl && self.multiline {
                     self.area.insert_newline();
                 } else {
-                    (self.handler)(self.area.lines().join("\n").as_str());
+                    ((self.handler)(app, self.area.lines().join("\n"))).await;
+                    return None;
                 }
             }
             _ => { self.area.input(input); }
         }
+        Some(self)
+    }
+}
+
+impl Debug for TextInput<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextInput").finish()
     }
 }

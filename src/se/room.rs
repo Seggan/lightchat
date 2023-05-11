@@ -52,6 +52,6 @@ impl Room {
             }
         } else {
             response.map_err(SeError::Reqwest)
-        }
+        };
     }
 }

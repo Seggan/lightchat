@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
 
 use reqwest::Client;
@@ -19,13 +17,7 @@ pub struct User {
 
 impl User {
     pub fn new() -> Self {
-        let cookie_file = File::open("cookies.json")
-            .map(BufReader::new);
-        let cookies = if let Ok(cookie_file) = cookie_file {
-            reqwest_cookie_store::CookieStore::load_json(cookie_file).unwrap()
-        } else {
-            reqwest_cookie_store::CookieStore::default()
-        };
+        let cookies = reqwest_cookie_store::CookieStore::default();
         let cookies = Arc::new(CookieStoreMutex::new(cookies));
         let client = Client::builder()
             .user_agent("Mozilla/5.0 (compatible; automated;) lightchat/0.1.0")
@@ -36,23 +28,15 @@ impl User {
         Self { client, cookies, fkey: None, user_id: None, rooms: HashMap::new() }
     }
 
-    pub async fn login(&mut self, email: &str, password: Option<&str>) -> Result<(), SeError> {
+    pub async fn login(&mut self, email: &str, password: &str) -> Result<(), SeError> {
         let host = "meta.stackexchange.com"; // Change if bork
         if !self.cookies.lock().unwrap().contains("stackexchange.com", "/", "acct") {
-            let password = if let Some(password) = password {
-                password
-            } else {
-                return Err(SeError::PasswordRequired);
-            };
             let fkey = self.get_fkey("https://meta.stackexchange.com/users/login").await?;
             let response = self.do_login(email, password, &fkey, host).await?;
             if response != "Login-OK" {
                 return Err(SeError::Login(format!("Site login failed: {}", response)));
             }
             self.load_profile(email, password, &fkey, host).await?;
-
-            let mut cookie_file = BufWriter::new(File::create("cookies.json").unwrap());
-            self.cookies.lock().unwrap().save_json(&mut cookie_file).unwrap();
         }
 
         self.fkey = Some(
@@ -167,11 +151,7 @@ impl User {
         return if let Ok(id) = id {
             Ok(id)
         } else {
-            if id_str.contains("login") {
-                Err(SeError::BadCredentials)
-            } else {
-                Err(SeError::Login(format!("Failed to get user id from '{}'", id_str)))
-            }
-        }
+            panic!("Failed to get user id from '{}'", id_str);
+        };
     }
 }

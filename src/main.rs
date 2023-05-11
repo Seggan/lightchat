@@ -36,13 +36,18 @@ async fn main() -> io::Result<()> {
             status: Status::Email,
             clipboard: ClipboardContext::new().unwrap(),
             user: None,
+            message: None,
         }
     ));
     loop {
         terminal.draw(|f| get_ui(f, app.clone(), &mut input_fields)).unwrap();
-        if let Some(new_fields) = handle_input(input_fields, app.clone()).await? {
+        if let Some(new_fields) = handle_input(input_fields, app.clone()).await {
             input_fields = new_fields;
         } else {
+            break;
+        }
+        let app = app.lock().unwrap();
+        if app.status == Status::Closing && app.message.is_none() {
             break;
         }
     }
@@ -57,6 +62,7 @@ pub struct App {
     pub status: Status,
     pub clipboard: ClipboardContext,
     pub user: Option<User>,
+    pub message: Option<String>,
 }
 
 pub type AppRef = Arc<Mutex<App>>;
@@ -65,6 +71,7 @@ pub type AppRef = Arc<Mutex<App>>;
 pub enum Status {
     Email,
     Password(String),
+    Closing
 }
 
 fn key_event_to_input(event: KeyEvent) -> Input {
@@ -92,23 +99,35 @@ fn key_event_to_input(event: KeyEvent) -> Input {
 }
 
 /// Returns true if the program should exit
-async fn handle_input(fields: HashMap<String, TextInput<'_>>, app: AppRef)
-                      -> io::Result<Option<HashMap<String, TextInput<'_>>>> {
-    if let Event::Key(key) = read()? {
+async fn handle_input(fields: HashMap<String, TextInput<'_>>, app_ref: AppRef) -> Option<HashMap<String, TextInput<'_>>> {
+    if let Event::Key(key) = read().unwrap() {
         if key.kind != KeyEventKind::Release {
             let input = key_event_to_input(key);
-            let mut new_inputs = HashMap::new();
-            for (name, input_field) in fields.into_iter() {
-                let input = input.clone();
-                if let Input { key: Key::Char('c'), ctrl: true, .. } | Input { key: Key::Esc, .. } = input {
-                    return Ok(None);
-                }
-                if let Some(new_input_field) = input_field.input(input, app.clone()).await {
-                    new_inputs.insert(name.clone(), new_input_field);
-                }
+
+            if let Input { key: Key::Char('c'), ctrl: true, .. } | Input { key: Key::Esc, .. } = input {
+                return None;
             }
-            return Ok(Some(new_inputs));
+
+            let mut app = app_ref.lock().unwrap();
+            if app.message.is_some() {
+                if let Input { key: Key::Enter, .. } = input {
+                    app.message = None;
+                }
+            } else {
+                drop(app);
+
+                let mut new_inputs = HashMap::new();
+                for (name, input_field) in fields.into_iter() {
+                    if let Some(new_input_field) = input_field
+                        .input(input.clone(), app_ref.clone())
+                        .await
+                    {
+                        new_inputs.insert(name.clone(), new_input_field);
+                    }
+                }
+                return Some(new_inputs);
+            }
         }
     }
-    Ok(Some(fields))
+    Some(fields)
 }

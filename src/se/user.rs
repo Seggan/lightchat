@@ -151,7 +151,11 @@ impl User {
         return if let Ok(id) = id {
             Ok(id)
         } else {
-            panic!("Failed to get user id from '{}'", id_str);
+            if id_str.contains("login") {
+                Err(SeError::BadCredentials)
+            } else {
+                Err(SeError::Login(format!("Failed to get user id from '{}'", id_str)))
+            }
         };
     }
 }

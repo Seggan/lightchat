@@ -12,7 +12,7 @@ use tui::Terminal;
 use tui_textarea::{Input, Key};
 
 use crate::input::TextInput;
-use crate::se::User;
+use crate::se::{Room, User};
 use crate::ui::get_ui;
 
 mod se;

@@ -125,11 +125,11 @@ fn render_message<B: Backend>(f: &mut Frame<B>, message: &str) {
         Spans::from("\n"),
         Spans::from(Span::styled(
             "Press enter to continue",
-            Style::default().add_modifier(Modifier::SLOW_BLINK),
+            Style::default().add_modifier(Modifier::RAPID_BLINK),
         )),
     ];
     let paragraph = Paragraph::new(text)
-        .block(Block::default().title("Message"))
+        .block(Block::default())
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
     f.render_widget(paragraph, horz[1]);

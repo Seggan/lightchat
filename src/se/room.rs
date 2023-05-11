@@ -1,10 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use reqwest::{Client, Response, StatusCode};
 
+use reqwest::{Client, Response, StatusCode};
 use reqwest_cookie_store::CookieStoreMutex;
+use scraper::{Html, Selector};
 use serde_json::Value;
+
 use crate::se::SeError;
+
+#[derive(Debug)]
+pub struct RoomSpec {
+    pub id: u64,
+    pub name: String,
+}
 
 pub struct Room {
     client: Client,
@@ -53,5 +61,59 @@ impl Room {
         } else {
             response.map_err(SeError::Reqwest)
         };
+    }
+
+    pub async fn get_all_rooms() -> Result<Vec<RoomSpec>, reqwest::Error> {
+        let client = Client::builder()
+            .user_agent("Mozilla/5.0 (compatible; automated;) lightchat/0.1.0")
+            .build()
+            .unwrap();
+        let mut rooms = Vec::new();
+        let mut params = HashMap::new();
+        params.insert("tab", "all");
+        params.insert("sort", "active");
+        params.insert("filter", "");
+        params.insert("pageSize", "20");
+        params.insert("page", "1");
+        let response = client.post("https://chat.stackexchange.com/rooms")
+            .form(&params)
+            .send()
+            .await?
+            .text()
+            .await?;
+        let document = Html::parse_document(response.as_str());
+        let selector = Selector::parse(".page-numbers").unwrap();
+        let pages = document.select(&selector)
+            .filter_map(|page| page.text().collect::<String>().parse::<u64>().ok())
+            .max()
+            .unwrap();
+        for page_num in 1..=pages {
+            let mut params = params.clone();
+            let string_num = page_num.to_string();
+            params.insert("page", string_num.as_str());
+            let response = client.post("https://chat.stackexchange.com/rooms")
+                .form(&params)
+                .send()
+                .await?
+                .text()
+                .await?;
+            let document = Html::parse_document(response.as_str());
+            let selector = Selector::parse(".room-name > a").unwrap();
+            let new_rooms = document.select(&selector)
+                .map(|room| {
+                    let id = room.value()
+                        .attr("href")
+                        .unwrap()
+                        .split("/")
+                        .nth(2)
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    let name = room.text().collect::<String>();
+                    RoomSpec { id, name }
+                });
+            rooms.extend(new_rooms);
+        }
+        Ok(rooms)
     }
 }

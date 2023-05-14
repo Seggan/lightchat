@@ -6,6 +6,7 @@ use reqwest_cookie_store::CookieStoreMutex;
 use scraper::{Html, Selector};
 
 use crate::se::{Room, SeError};
+use crate::APP_USER_AGENT;
 
 pub struct User {
     client: Client,
@@ -20,7 +21,7 @@ impl User {
         let cookies = reqwest_cookie_store::CookieStore::default();
         let cookies = Arc::new(CookieStoreMutex::new(cookies));
         let client = Client::builder()
-            .user_agent("Mozilla/5.0 (compatible; automated;) lightchat/0.1.0")
+            .user_agent(APP_USER_AGENT)
             .cookie_store(true)
             .cookie_provider(cookies.clone())
             .build()
@@ -64,19 +65,19 @@ impl User {
     }
 
     async fn do_login(&self, email: &str, password: &str, fkey: &str, host: &str) -> Result<String, reqwest::Error> {
-        let mut form = HashMap::new();
-        form.insert("email", email);
-        form.insert("password", password);
-        form.insert("fkey", fkey);
-        form.insert("isSignup", "false");
-        form.insert("isLogin", "true");
-        form.insert("isPassword", "false");
-        form.insert("isAddLogin", "false");
-        form.insert("hasCaptcha", "false");
-        form.insert("ssrc", "head");
-        form.insert("submitButton", "Log in");
         self.client.post(format!("https://{}/users/login-or-signup/validation/track", host))
-            .form(&form)
+            .form(&[
+                ("email", email),
+                ("password", password),
+                ("fkey", fkey),
+                ("isSignup", "false"),
+                ("isLogin", "true"),
+                ("isPassword", "false"),
+                ("isAddLogin", "false"),
+                ("hasCaptcha", "false"),
+                ("ssrc", "head"),
+                ("submitButton", "Log in"),
+            ])
             .send()
             .await?
             .text()

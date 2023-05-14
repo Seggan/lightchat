@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cli_clipboard::{ClipboardContext, ClipboardProvider};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
@@ -71,8 +72,17 @@ pub type AppRef = Arc<Mutex<App>>;
 pub enum Status {
     Email,
     Password(String),
-    Closing
+    Closing,
 }
+
+pub const APP_USER_AGENT: &str = concat!(
+    "Mozilla/5.0 (compatible; automated) ",
+    concat!(
+        env!("CARGO_PKG_NAME"),
+        "/",
+        env!("CARGO_PKG_VERSION")
+    )
+);
 
 fn key_event_to_input(event: KeyEvent) -> Input {
     let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);

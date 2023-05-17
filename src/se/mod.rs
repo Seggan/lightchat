@@ -6,7 +6,7 @@
 mod user;
 mod error;
 mod room;
-mod event;
+pub mod event;
 
 pub use user::*;
 pub use error::*;

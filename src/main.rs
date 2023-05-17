@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cli_clipboard::{ClipboardContext, ClipboardProvider};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
@@ -13,7 +13,8 @@ use tui::Terminal;
 use tui_textarea::{Input, Key};
 
 use crate::input::TextInput;
-use crate::se::{Room, User};
+use crate::se::event::ChatEventType;
+use crate::se::User;
 use crate::ui::get_ui;
 
 mod se;
@@ -76,12 +77,12 @@ pub enum Status {
 }
 
 pub const APP_USER_AGENT: &str = concat!(
-    "Mozilla/5.0 (compatible; automated) ",
-    concat!(
-        env!("CARGO_PKG_NAME"),
-        "/",
-        env!("CARGO_PKG_VERSION")
-    )
+"Mozilla/5.0 (compatible; automated) ",
+concat!(
+env!("CARGO_PKG_NAME"),
+"/",
+env!("CARGO_PKG_VERSION")
+)
 );
 
 fn key_event_to_input(event: KeyEvent) -> Input {

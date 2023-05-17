@@ -32,7 +32,7 @@ impl User {
     pub async fn login(&mut self, email: &str, password: &str) -> Result<(), SeError> {
         let host = "meta.stackexchange.com"; // Change if bork
         if !self.cookies.lock().unwrap().contains("stackexchange.com", "/", "acct") {
-            let fkey = self.get_fkey("https://meta.stackexchange.com/users/login").await?;
+            let fkey = self.get_fkey(format!("https://{}/users/login", host).as_str()).await?;
             let response = self.do_login(email, password, &fkey, host).await?;
             if response != "Login-OK" {
                 return Err(SeError::Login(format!("Site login failed: {}", response)));

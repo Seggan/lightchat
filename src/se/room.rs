@@ -4,21 +4,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use futures_util::StreamExt;
 use reqwest::{Client, Response, StatusCode};
 use reqwest_cookie_store::CookieStoreMutex;
 use scraper::{Html, Selector};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::http::header::{ORIGIN, USER_AGENT};
 
 use crate::APP_USER_AGENT;
-use crate::se::event::ChatEventType;
+use crate::se::event::{ChatEventType, on_ws_conn};
 use crate::se::SeError;
 
 #[derive(Debug)]
@@ -27,7 +21,8 @@ pub struct RoomSpec {
     pub name: String,
 }
 
-type EventHandlers = Arc<Mutex<Vec<Box<dyn FnMut(ChatEventType) -> Pin<Box<dyn Future<Output=()> + Send + 'static>> + Send>>>>;
+pub type EventHandlers =
+    Arc<Mutex<Vec<Box<dyn FnMut(ChatEventType) -> Pin<Box<dyn Future<Output=()> + Send + 'static>> + Send>>>>;
 
 pub struct Room {
     client: Arc<Client>,
@@ -71,7 +66,7 @@ impl Room {
                             url,
                             SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
                         );
-                        Self::on_ws_conn(url, room_id, moved_event_handlers.clone()).await.unwrap();
+                        on_ws_conn(url, room_id, moved_event_handlers.clone()).await.unwrap();
                     }
                 }
             }
@@ -169,39 +164,6 @@ impl Room {
             rooms.extend(new_rooms);
         }
         Ok(rooms)
-    }
-
-    async fn on_ws_conn(url: String, room_id: u64, event_handlers: EventHandlers) -> Result<(), Box<dyn std::error::Error>> {
-        let room_key = format!("r{}", room_id);
-        let mut request = url.into_client_request()?;
-        let headers = request.headers_mut();
-        headers.insert(ORIGIN, HeaderValue::from_static("https://chat.stackexchange.com"));
-        headers.insert(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT));
-        let (ws, _) = connect_async(request).await?;
-        let (_write, mut read) = ws.split();
-        while let Some(message) = read.next().await {
-            let message = message?;
-            if let Message::Text(message) = message {
-                let message = serde_json::from_str::<Value>(&message)?;
-                for (key, value) in message.as_object().unwrap() {
-                    if key == room_key.as_str() {
-                        let e = value.as_object().unwrap().get("e");
-                        if let Some(e) = e {
-                            let e = e.as_array().unwrap();
-                            let event: ChatEventType = serde_json::from_value(e[0].clone())?;
-                            let mut handlers = event_handlers.lock().await;
-                            for handler in handlers.iter_mut() {
-                                handler(event.clone()).await;
-                            }
-                        }
-                        break;
-                    }
-                }
-            } else if let Message::Close(_) = message {
-                break;
-            }
-        }
-        Ok(())
     }
 }
 

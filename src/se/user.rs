@@ -14,6 +14,7 @@ pub struct User {
     fkey: Option<String>,
     user_id: Option<u64>,
     rooms: HashMap<u64, Room>,
+    pub current_room: Option<u64>,
 }
 
 impl User {
@@ -26,7 +27,7 @@ impl User {
             .cookie_provider(cookies.clone())
             .build()
             .unwrap();
-        Self { client, cookies, fkey: None, user_id: None, rooms: HashMap::new() }
+        Self { client, cookies, fkey: None, user_id: None, rooms: HashMap::new(), current_room: None }
     }
 
     pub async fn login(&mut self, email: &str, password: &str) -> Result<(), SeError> {
@@ -53,15 +54,43 @@ impl User {
         Ok(())
     }
 
-    pub fn join_room(&mut self, room_id: u64) -> Result<&Room, SeError> {
+    pub async fn join_room(&mut self, room_id: u64) -> Result<&Room, SeError> {
+        // if we already have the room, just return it
+        // have to use this workaround because of https://github.com/rust-lang/rfcs/blob/master/text/2094-nll.md#problem-case-3-conditional-control-flow-across-functions
+        if self.rooms.contains_key(&room_id) {
+            return Ok(self.rooms.get(&room_id).unwrap());
+        }
         if let Some(id) = self.user_id {
             if let Some(fkey) = &self.fkey {
-                let room = Room::new(self.cookies.clone(), fkey.clone(), id, room_id);
+                if self.rooms.is_empty() {
+                    self.current_room = Some(room_id);
+                }
+                let room = Room::new(self.cookies.clone(), fkey.clone(), id, room_id).await;
                 self.rooms.insert(room_id, room);
                 return Ok(self.rooms.get(&room_id).unwrap());
             }
         }
         Err(SeError::BadCredentials)
+    }
+
+    pub fn leave_room(&mut self, room_id: u64) {
+        // the Drop impl for Room will take care of actually leaving the room
+        self.rooms.remove(&room_id);
+    }
+
+    pub fn get_room(&self, room_id: u64) -> Option<&Room> {
+        self.rooms.get(&room_id)
+    }
+
+    pub fn get_rooms(&self) -> Vec<&Room> {
+        self.rooms.values().collect()
+    }
+
+    pub fn current_room(&self) -> Option<&Room> {
+        if let Some(id) = self.current_room {
+            return self.get_room(id);
+        }
+        None
     }
 
     async fn do_login(&self, email: &str, password: &str, fkey: &str, host: &str) -> Result<String, reqwest::Error> {

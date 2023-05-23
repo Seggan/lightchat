@@ -1,4 +1,5 @@
 use thiserror::Error;
+use crate::se::event::ChatEventType;
 
 #[derive(Error, Debug)]
 pub enum SeError {
@@ -19,4 +20,7 @@ pub enum SeError {
 
     #[error("Bad response: {0}: {1}")]
     BadResponse(u16, String),
+    
+    #[error("Expected message event, got {0:?}")]
+    ExpectedMessageEvent(ChatEventType),
 }

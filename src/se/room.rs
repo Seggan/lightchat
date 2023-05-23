@@ -2,12 +2,14 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use reqwest::{Client, Response, StatusCode};
 use reqwest_cookie_store::CookieStoreMutex;
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_with::serde_as;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -22,19 +24,20 @@ pub struct RoomSpec {
 }
 
 pub type EventHandlers =
-    Arc<Mutex<Vec<Box<dyn FnMut(ChatEventType) -> Pin<Box<dyn Future<Output=()> + Send + 'static>> + Send>>>>;
+Arc<Mutex<Vec<Box<dyn FnMut(ChatEventType) -> Pin<Box<dyn Future<Output=()> + Send + 'static>> + Send>>>>;
 
 pub struct Room {
     client: Arc<Client>,
     fkey: String,
     user_id: u64,
     room_id: u64,
+    messages: Arc<Mutex<Vec<Message>>>,
     event_handlers: EventHandlers,
     task: JoinHandle<()>,
 }
 
 impl Room {
-    pub fn new(cookies: Arc<CookieStoreMutex>, fkey: String, user_id: u64, room_id: u64) -> Self {
+    pub async fn new(cookies: Arc<CookieStoreMutex>, fkey: String, user_id: u64, room_id: u64) -> Self {
         let client = Arc::new(Client::builder()
             .user_agent(APP_USER_AGENT)
             .cookie_store(true)
@@ -57,10 +60,8 @@ impl Room {
                     .json::<Value>()
                     .await
                     .unwrap();
-                println!("{:?}", response);
                 if let Value::Object(obj) = response {
                     if let Value::String(url) = &obj["url"] {
-                        println!("Connecting to {}", url);
                         let url = format!(
                             "{}?l={}",
                             url,
@@ -71,18 +72,71 @@ impl Room {
                 }
             }
         });
-        Self { client, fkey, user_id, room_id, event_handlers, task }
+        let ret = Self {
+            client,
+            fkey,
+            user_id,
+            room_id,
+            messages: Arc::new(Mutex::new(Vec::new())),
+            event_handlers,
+            task,
+        };
+        let messages = ret.messages.clone();
+        ret.register_handler(move |event| {
+            let messages = messages.clone();
+            async move {
+                if let Ok(message) = event.try_into() {
+                    let mut messages = messages.lock().await;
+                    if !messages.contains(&message) {
+                        messages.push(message);
+                    }
+                }
+            }
+        }).await;
+        ret
     }
 
     pub async fn send_message(&self, msg: &str) -> Result<u64, SeError> {
         let response = self.request(
-            format!("https://chat.stackexchange.com/chats/{}/messages/new", self.room_id).as_str(),
+            format!("https://chat.stackexchange.com/chats/{}/messages/new", self.room_id),
             [("text", msg)].into(),
         )
             .await?
             .json::<Value>()
             .await?;
         Ok(response["id"].as_u64().unwrap())
+    }
+
+    pub async fn get_prev_messages(&self, num_messages: usize) -> Result<(), SeError> {
+        let response = self.request(
+            format!("https://chat.stackexchange.com/chats/{}/events", self.room_id),
+            [("mode", "Messages"), ("msgCount", num_messages.to_string().as_str()), ("since", "0")].into(),
+        )
+            .await?
+            .json::<Value>()
+            .await?;
+        let events = response.as_object().unwrap()["events"].as_array().unwrap();
+
+        let new = events.into_iter()
+            .map(|event| serde_json::from_value::<Message>(event.clone()).unwrap())
+            .collect::<Vec<Message>>();
+
+        let mut messages = self.messages.lock().await;
+        messages.retain(|msg| !new.contains(msg));
+        messages.extend(new);
+
+        Ok(())
+    }
+
+    pub async fn get_messages(&self) -> Vec<Message> {
+        {
+            let messages = self.messages.lock().await;
+            if messages.is_empty() {
+                drop(messages);
+                self.get_prev_messages(100).await.unwrap();
+            }
+        }
+        self.messages.lock().await.clone()
     }
 
     pub async fn register_handler<F>(&self, mut handler: impl FnMut(ChatEventType) -> F + Send + 'static)
@@ -92,7 +146,7 @@ impl Room {
         handlers.push(Box::new(move |event| Box::pin(handler(event))));
     }
 
-    async fn request(&self, url: &str, mut params: HashMap<&str, &str>) -> Result<Response, SeError> {
+    async fn request(&self, url: String, mut params: HashMap<&str, &str>) -> Result<Response, SeError> {
         params.insert("fkey", self.fkey.as_str());
         let response = self.client.post(url)
             .header("Referer", format!("https://chat.stackexchange.com/rooms/{}", self.room_id))
@@ -136,6 +190,7 @@ impl Room {
             .filter_map(|page| page.text().collect::<String>().parse::<u64>().ok())
             .max()
             .unwrap();
+        let selector = Selector::parse(".room-name > a").unwrap();
         for page_num in 1..=pages {
             let mut params = params.clone();
             let string_num = page_num.to_string();
@@ -147,7 +202,6 @@ impl Room {
                 .text()
                 .await?;
             let document = Html::parse_document(response.as_str());
-            let selector = Selector::parse(".room-name > a").unwrap();
             let new_rooms = document.select(&selector)
                 .map(|room| {
                     let id = room.value()
@@ -180,5 +234,46 @@ impl Drop for Room {
                 .await
                 .unwrap();
         });
+    }
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+pub struct Message {
+    #[serde(rename = "message_id")]
+    pub id: u64,
+    pub content: String,
+    pub user_id: u64,
+    pub room_id: u64,
+    #[serde(rename = "user_name")]
+    pub username: String,
+    #[serde(rename = "time_stamp")]
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    pub timestamp: Duration,
+}
+
+impl TryFrom<ChatEventType> for Message {
+    type Error = SeError;
+
+    fn try_from(event: ChatEventType) -> Result<Self, Self::Error> {
+        if let ChatEventType::Message { event, content } = event {
+            Ok(Message {
+                id: event.message_id,
+                content,
+                user_id: event.user_id,
+                room_id: event.room_id,
+                username: event.username,
+                timestamp: event.timestamp,
+            })
+        } else {
+            Err(SeError::ExpectedMessageEvent(event))
+        }
+    }
+}
+
+impl PartialEq for Message {
+    fn eq(&self, other: &Self) -> bool {
+        // the second case is for those fake messages that we send when the user sends a message
+        self.id == other.id || (self.content == other.content && self.username == other.username)
     }
 }

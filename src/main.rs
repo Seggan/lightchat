@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cli_clipboard::{ClipboardContext, ClipboardProvider};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
@@ -10,19 +9,20 @@ use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use tui::backend::CrosstermBackend;
 use tui::Terminal;
+use tui::widgets::ListState;
 use tui_textarea::{Input, Key};
 
 use crate::input::TextInput;
-use crate::se::event::ChatEventType;
-use crate::se::User;
+use crate::se::{Message, User};
 use crate::ui::get_ui;
 
 mod se;
-mod ui;
 mod input;
+mod ui;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    console_subscriber::init();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -31,16 +31,18 @@ async fn main() -> io::Result<()> {
 
     terminal.clear()?;
 
-    let mut input_fields = HashMap::new();
-
     let app = Arc::new(Mutex::new(
         App {
             status: Status::Email,
             clipboard: ClipboardContext::new().unwrap(),
             user: None,
             message: None,
+            messages_state: ListState::default(),
+            messages: Vec::new(),
         }
     ));
+
+    let mut input_fields = HashMap::new();
     loop {
         terminal.draw(|f| get_ui(f, app.clone(), &mut input_fields)).unwrap();
         if let Some(new_fields) = handle_input(input_fields, app.clone()).await {
@@ -48,32 +50,22 @@ async fn main() -> io::Result<()> {
         } else {
             break;
         }
-        let app = app.lock().unwrap();
+        let mut app = app.lock().unwrap();
         if app.status == Status::Closing && app.message.is_none() {
             break;
+        }
+        if let Some(user) = &app.user {
+            if let Some(room) = user.current_room() {
+                app.messages = room.get_messages().await;
+            }
         }
     }
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
+
     Ok(())
-}
-
-pub struct App {
-    pub status: Status,
-    pub clipboard: ClipboardContext,
-    pub user: Option<User>,
-    pub message: Option<String>,
-}
-
-pub type AppRef = Arc<Mutex<App>>;
-
-#[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub enum Status {
-    Email,
-    Password(String),
-    Closing,
 }
 
 pub const APP_USER_AGENT: &str = concat!(
@@ -125,6 +117,23 @@ async fn handle_input(fields: HashMap<String, TextInput<'_>>, app_ref: AppRef) -
                     app.message = None;
                 }
             } else {
+                let messages = app.messages.len();
+                let state = &mut app.messages_state;
+                if let Some(selected) = state.selected() {
+                    match input.key.clone() {
+                        Key::Up => {
+                            if selected > 0 {
+                                state.select(Some(selected - 1));
+                            }
+                        },
+                        Key::Down => {
+                            if selected < messages - 1 {
+                                state.select(Some(selected + 1));
+                            }
+                        },
+                        _ => {}
+                    }
+                }
                 drop(app);
 
                 let mut new_inputs = HashMap::new();
@@ -141,4 +150,29 @@ async fn handle_input(fields: HashMap<String, TextInput<'_>>, app_ref: AppRef) -
         }
     }
     Some(fields)
+}
+
+pub struct App {
+    pub status: Status,
+    pub clipboard: ClipboardContext,
+    pub user: Option<User>,
+    pub message: Option<String>,
+    pub messages_state: ListState,
+    pub messages: Vec<Message>,
+}
+
+pub type AppRef = Arc<Mutex<App>>;
+
+impl App {
+    pub fn user(&self) -> &User {
+        self.user.as_ref().expect("User not logged in")
+    }
+}
+
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+pub enum Status {
+    Email,
+    Password(String),
+    InRoom,
+    Closing,
 }

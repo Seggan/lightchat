@@ -1,4 +1,5 @@
 use std::time::Duration;
+
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,7 +31,7 @@ pub struct ChatEvent {
     pub timestamp: Duration,
     pub user_id: u64,
     #[serde(rename = "user_name")]
-    pub username: String
+    pub username: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -40,12 +41,12 @@ pub enum ChatEventType {
         #[serde(flatten)]
         event: ChatEvent,
         message_edits: u64,
-        content: String
+        content: String,
     },
     Message {
         #[serde(flatten)]
         event: ChatEvent,
-        content: String
+        content: String,
     },
     Delete {
         #[serde(flatten)]
@@ -71,7 +72,7 @@ pub async fn on_ws_conn(url: String, room_id: u64, event_handlers: EventHandlers
                     if let Some(e) = e {
                         let e = e.as_array().unwrap();
                         let e = e[0].clone();
-                        let event= serde_json::from_value::<ChatEventType>(e.clone());
+                        let event = serde_json::from_value::<ChatEventType>(e.clone());
                         if let Ok(event) = event {
                             let mut handlers = event_handlers.lock().await;
                             for handler in handlers.iter_mut() {

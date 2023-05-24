@@ -6,7 +6,7 @@ use reqwest_cookie_store::CookieStoreMutex;
 use scraper::{Html, Selector};
 
 use crate::se::{Room, SeError};
-use crate::APP_USER_AGENT;
+use crate::app::APP_USER_AGENT;
 
 pub struct User {
     client: Client,

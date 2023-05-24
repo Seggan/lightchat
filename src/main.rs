@@ -1,178 +1,117 @@
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::io;
+use std::error::Error;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::SystemTime;
 
 use cli_clipboard::{ClipboardContext, ClipboardProvider};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
-use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use tui::backend::CrosstermBackend;
-use tui::Terminal;
-use tui::widgets::ListState;
-use tui_textarea::{Input, Key};
+use cursive::{Cursive, CursiveExt};
+use cursive::align::HAlign;
+use cursive::event::Key;
+use cursive::traits::{Nameable, Resizable};
+use cursive::views::{Dialog, EditView, LinearLayout, TextView};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 
-use crate::input::TextInput;
-use crate::se::{Message, User};
-use crate::ui::get_ui;
+use crate::app::{App, AppRef, Status};
+use crate::se::User;
 
 mod se;
-mod input;
-mod ui;
+mod app;
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
-    console_subscriber::init();
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    terminal.clear()?;
-
+fn main() {
     let app = Arc::new(Mutex::new(
         App {
-            status: Status::Email,
+            status: Status::Login,
             clipboard: ClipboardContext::new().unwrap(),
             user: None,
             message: None,
-            messages_state: ListState::default(),
-            messages: Vec::new(),
         }
     ));
 
-    let mut input_fields = HashMap::new();
-    loop {
-        terminal.draw(|f| get_ui(f, app.clone(), &mut input_fields)).unwrap();
-        if let Some(new_fields) = handle_input(input_fields, app.clone()).await {
-            input_fields = new_fields;
-        } else {
-            break;
-        }
-        let mut app = app.lock().unwrap();
-        if app.status == Status::Closing && app.message.is_none() {
-            break;
-        }
-        if let Some(user) = &app.user {
-            if let Some(room) = user.current_room() {
-                app.messages = room.get_messages().await;
-            }
-        }
-    }
+    let (to_ui, from_event) = channel::<Command>(32);
+    let (to_event, from_ui) = channel::<Command>(32);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
+    let from_event = Arc::new(Mutex::new(from_event));
 
-    Ok(())
-}
+    let cloned_app = app.clone();
+    thread::spawn(move ||
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(event_thread(cloned_app, to_ui, from_ui))
+    );
 
-pub const APP_USER_AGENT: &str = concat!(
-"Mozilla/5.0 (compatible; automated) ",
-concat!(
-env!("CARGO_PKG_NAME"),
-"/",
-env!("CARGO_PKG_VERSION")
-)
-);
+    let mut siv = Cursive::new();
 
-fn key_event_to_input(event: KeyEvent) -> Input {
-    let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = event.modifiers.contains(KeyModifiers::ALT);
-    let key = match event.code {
-        KeyCode::Char(c) => Key::Char(c),
-        KeyCode::Backspace => Key::Backspace,
-        KeyCode::Enter => Key::Enter,
-        KeyCode::Left => Key::Left,
-        KeyCode::Right => Key::Right,
-        KeyCode::Up => Key::Up,
-        KeyCode::Down => Key::Down,
-        KeyCode::Tab => Key::Tab,
-        KeyCode::Delete => Key::Delete,
-        KeyCode::Home => Key::Home,
-        KeyCode::End => Key::End,
-        KeyCode::PageUp => Key::PageUp,
-        KeyCode::PageDown => Key::PageDown,
-        KeyCode::F(x) => Key::F(x),
-        KeyCode::Esc => Key::Esc,
-        _ => Key::Null,
-    };
-    Input { key, ctrl, alt }
-}
+    siv.add_layer(
+        Dialog::around(
+            LinearLayout::vertical()
+                .child(TextView::new("Email:").h_align(HAlign::Center))
+                .child(EditView::new().with_name("email").fixed_width(30))
+                .child(TextView::new("Password:").h_align(HAlign::Center))
+                .child(EditView::new().secret().with_name("password").fixed_width(30))
+        )
+            .title("Login")
+            .button("Login", move |siv| {
+                let email = siv.call_on_name("email", |view: &mut EditView| view.get_content()).unwrap();
+                let password = siv.call_on_name("password", |view: &mut EditView| view.get_content()).unwrap();
 
-/// Returns true if the program should exit
-async fn handle_input(fields: HashMap<String, TextInput<'_>>, app_ref: AppRef) -> Option<HashMap<String, TextInput<'_>>> {
-    if let Event::Key(key) = read().unwrap() {
-        if key.kind != KeyEventKind::Release {
-            let input = key_event_to_input(key);
-
-            if let Input { key: Key::Char('c'), ctrl: true, .. } | Input { key: Key::Esc, .. } = input {
-                return None;
-            }
-
-            let mut app = app_ref.lock().unwrap();
-            if app.message.is_some() {
-                if let Input { key: Key::Enter, .. } = input {
-                    app.message = None;
+                if email.is_empty() || password.is_empty() {
+                    siv.add_layer(Dialog::info("Email and/or password must not be empty"));
+                    return;
                 }
-            } else {
-                let messages = app.messages.len();
-                let state = &mut app.messages_state;
-                if let Some(selected) = state.selected() {
-                    match input.key.clone() {
-                        Key::Up => {
-                            if selected > 0 {
-                                state.select(Some(selected - 1));
-                            }
-                        },
-                        Key::Down => {
-                            if selected < messages - 1 {
-                                state.select(Some(selected + 1));
-                            }
-                        },
-                        _ => {}
+
+                to_event.blocking_send(Command::Login {
+                    email: (*email).clone(),
+                    password: (*password).clone(),
+                }).unwrap();
+
+                match from_event.lock().unwrap().blocking_recv().unwrap() {
+                    Command::Error(err) => {
+                        siv.add_layer(Dialog::info(err.to_string()));
                     }
-                }
-                drop(app);
-
-                let mut new_inputs = HashMap::new();
-                for (name, input_field) in fields.into_iter() {
-                    if let Some(new_input_field) = input_field
-                        .input(input.clone(), app_ref.clone())
-                        .await
-                    {
-                        new_inputs.insert(name.clone(), new_input_field);
+                    Command::Success => {
+                        siv.pop_layer();
+                        // TODO
                     }
+                    _ => unreachable!(),
                 }
-                return Some(new_inputs);
+            })
+    );
+
+    siv.add_global_callback(Key::Esc, |siv| siv.quit());
+
+    siv.run();
+}
+
+async fn event_thread(app: AppRef, to_ui: Sender<Command>, mut from_ui: Receiver<Command>) {
+    let mut app = app.lock().unwrap();
+    while app.status == Status::Login {
+        if let Command::Login { email, password } = from_ui.recv().await.unwrap() {
+            let mut user = User::new();
+            if let Err(error) = user.login(&email, &password).await {
+                to_ui.send(Command::Error(Box::new(error))).await.unwrap();
             }
+            let room = user.join_room(1).await.unwrap();
+            room.send_message(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .to_string()
+                    .as_str()
+            ).await.unwrap();
+            app.user = Some(user);
+            app.status = Status::InRoom;
+            to_ui.send(Command::Success).await.unwrap();
         }
     }
-    Some(fields)
 }
 
-pub struct App {
-    pub status: Status,
-    pub clipboard: ClipboardContext,
-    pub user: Option<User>,
-    pub message: Option<String>,
-    pub messages_state: ListState,
-    pub messages: Vec<Message>,
-}
-
-pub type AppRef = Arc<Mutex<App>>;
-
-impl App {
-    pub fn user(&self) -> &User {
-        self.user.as_ref().expect("User not logged in")
-    }
-}
-
-#[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub enum Status {
-    Email,
-    Password(String),
-    InRoom,
-    Closing,
+#[derive(Debug)]
+enum Command {
+    Login { email: String, password: String },
+    Error(Box<dyn Error + Send>),
+    Send(String),
+    Success,
 }

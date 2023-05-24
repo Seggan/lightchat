@@ -6,9 +6,6 @@ pub enum SeError {
     #[error("reqwest error: {0}")]
     Reqwest(#[from] reqwest::Error),
 
-    #[error("Password is required")]
-    PasswordRequired,
-
     #[error("{0}")]
     Login(String),
 

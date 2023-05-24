@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::http::header::{ORIGIN, USER_AGENT};
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::APP_USER_AGENT;
+use crate::app::APP_USER_AGENT;
 use crate::se::EventHandlers;
 
 /*

@@ -13,7 +13,7 @@ use serde_with::serde_as;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::APP_USER_AGENT;
+use crate::app::APP_USER_AGENT;
 use crate::se::event::{ChatEventType, on_ws_conn};
 use crate::se::SeError;
 
@@ -224,16 +224,6 @@ impl Room {
 impl Drop for Room {
     fn drop(&mut self) {
         self.task.abort();
-        let room_id = self.room_id;
-        let fkey = self.fkey.clone();
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            client.post(format!("https://chat.stackexchange.com/chats/leave/{}", room_id))
-                .form(&[("fkey", fkey.as_str())])
-                .send()
-                .await
-                .unwrap();
-        });
     }
 }
 

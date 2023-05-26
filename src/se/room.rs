@@ -6,7 +6,8 @@ use std::time::{Duration, SystemTime};
 
 use reqwest::{Client, Response, StatusCode};
 use reqwest_cookie_store::CookieStoreMutex;
-use scraper::{Html, Selector};
+use select::document::Document;
+use select::predicate::{Class, Name, Predicate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
@@ -17,7 +18,7 @@ use crate::app::APP_USER_AGENT;
 use crate::se::event::{ChatEventType, on_ws_conn};
 use crate::se::SeError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RoomSpec {
     pub id: u64,
     pub name: String,
@@ -118,7 +119,7 @@ impl Room {
         let events = response.as_object().unwrap()["events"].as_array().unwrap();
 
         let new = events.into_iter()
-            .map(|event| serde_json::from_value::<Message>(event.clone()).unwrap())
+            .filter_map(|event| serde_json::from_value::<Message>(event.clone()).ok())
             .collect::<Vec<Message>>();
 
         let mut messages = self.messages.lock().await;
@@ -166,58 +167,15 @@ impl Room {
         };
     }
 
-    pub async fn get_all_rooms() -> Result<Vec<RoomSpec>, reqwest::Error> {
-        let client = Client::builder()
-            .user_agent("Mozilla/5.0 (compatible; automated;) lightchat/0.1.0")
-            .build()
-            .unwrap();
-        let mut rooms = Vec::new();
-        let mut params = HashMap::new();
-        params.insert("tab", "all");
-        params.insert("sort", "active");
-        params.insert("filter", "");
-        params.insert("pageSize", "20");
-        params.insert("page", "1");
-        let response = client.post("https://chat.stackexchange.com/rooms")
-            .form(&params)
-            .send()
-            .await?
-            .text()
-            .await?;
-        let document = Html::parse_document(response.as_str());
-        let selector = Selector::parse(".page-numbers").unwrap();
-        let pages = document.select(&selector)
-            .filter_map(|page| page.text().collect::<String>().parse::<u64>().ok())
-            .max()
-            .unwrap();
-        let selector = Selector::parse(".room-name > a").unwrap();
-        for page_num in 1..=pages {
-            let mut params = params.clone();
-            let string_num = page_num.to_string();
-            params.insert("page", string_num.as_str());
-            let response = client.post("https://chat.stackexchange.com/rooms")
-                .form(&params)
-                .send()
-                .await?
-                .text()
-                .await?;
-            let document = Html::parse_document(response.as_str());
-            let new_rooms = document.select(&selector)
-                .map(|room| {
-                    let id = room.value()
-                        .attr("href")
-                        .unwrap()
-                        .split("/")
-                        .nth(2)
-                        .unwrap()
-                        .parse()
-                        .unwrap();
-                    let name = room.text().collect::<String>();
-                    RoomSpec { id, name }
-                });
-            rooms.extend(new_rooms);
-        }
-        Ok(rooms)
+    pub async fn leave(self) {
+        self.request(
+            format!("https://chat.stackexchange.com/chats/leave/{}", self.room_id),
+            [].into(),
+        ).await.unwrap();
+    }
+
+    pub fn get_id(&self) -> u64 {
+        self.room_id
     }
 }
 

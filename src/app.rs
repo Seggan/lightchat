@@ -1,6 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use cli_clipboard::ClipboardContext;
+use tokio::sync::Mutex;
 
 use crate::se::User;
 

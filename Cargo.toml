@@ -4,20 +4,28 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Async
 tokio = { version = "1.28", features = ["full"] }
 console-subscriber = "0.1"
-
-reqwest = { version = "0.11", features = ["cookies", "json"] }
-reqwest_cookie_store = "0.5"
-scraper = "0.16"
-tokio-tungstenite = { version = "0.19", features = ["native-tls"] }
+futures = "0.3"
 futures-util = "0.3"
 
+# Networking
+reqwest = { version = "0.11", features = ["cookies", "json"] }
+reqwest_cookie_store = "0.5"
+select = "0.6"
+tokio-tungstenite = { version = "0.19", features = ["native-tls"] }
+
+# Serde
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.0"
 
+# TUI
 cursive = { version = "0.20", default-features = false, features = ["crossterm-backend"] }
+cursive-markup = "0.3"
+cursive-async-view = "0.6"
 
+# Other
 thiserror = "1.0"
 cli-clipboard = "0.4"

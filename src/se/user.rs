@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use reqwest::Client;
 use reqwest_cookie_store::CookieStoreMutex;
-use scraper::{Html, Selector};
+use select::document::Document;
+use select::predicate::{Attr, Class, Name, Predicate};
 
-use crate::se::{Room, SeError};
+use crate::se::{Room, RoomSpec, SeError};
 use crate::app::APP_USER_AGENT;
 
 pub struct User {
@@ -73,9 +74,14 @@ impl User {
         Err(SeError::BadCredentials)
     }
 
-    pub fn leave_room(&mut self, room_id: u64) {
-        // the Drop impl for Room will take care of actually leaving the room
-        self.rooms.remove(&room_id);
+    pub async fn leave_room(&mut self, room_id: u64) {
+        let room = self.rooms.remove(&room_id);
+        if let Some(room) = room {
+            if self.current_room == Some(room_id) {
+                self.current_room = None;
+            }
+            room.leave().await;
+        }
     }
 
     pub fn get_room(&self, room_id: u64) -> Option<&Room> {
@@ -91,6 +97,55 @@ impl User {
             return self.get_room(id);
         }
         None
+    }
+
+    pub async fn get_all_rooms(&self) -> Result<Vec<RoomSpec>, reqwest::Error> {
+        let mut rooms = Vec::new();
+        let mut params = HashMap::new();
+        params.insert("tab", "all");
+        params.insert("sort", "active");
+        params.insert("filter", "");
+        params.insert("pageSize", "21");
+        params.insert("page", "1");
+        let response = self.client.get("https://chat.stackexchange.com/rooms?tab=all&sort=active")
+            .send()
+            .await?
+            .text()
+            .await?;
+        let pages = Document::from(response.as_str())
+            .find(Class("page-numbers"))
+            .filter_map(|page| page.text().parse::<u64>().ok())
+            .max()
+            .unwrap();
+        let selector = Class("room-name").descendant(Name("a"));
+        for page_num in 1..=pages {
+            let mut params = params.clone();
+            let string_num = page_num.to_string();
+            params.insert("page", string_num.as_str());
+            let response = self.client.post("https://chat.stackexchange.com/rooms")
+                .form(&params)
+                .send()
+                .await?
+                .text()
+                .await?;
+            let page = Document::from(response.as_str());
+            let new_rooms = page.find(selector)
+                .map(|room| {
+                    let id = room
+                        .attr("href")
+                        .unwrap()
+                        .split("/")
+                        .nth(2)
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    RoomSpec { id, name: room.text() }
+                })
+                .filter(|room| !rooms.contains(room))
+                .collect::<Vec<RoomSpec>>();
+            rooms.extend(new_rooms);
+        }
+        Ok(rooms)
     }
 
     async fn do_login(&self, email: &str, password: &str, fkey: &str, host: &str) -> Result<String, reqwest::Error> {
@@ -119,11 +174,10 @@ impl User {
             .await?
             .text()
             .await?;
-        let document = Html::parse_document(&page);
-        let fkey = document.select(&Selector::parse("input[name=fkey]").unwrap())
+        let document = Document::from(page.as_str());
+        let fkey = document.find(Attr("name", "fkey"))
             .next()
             .ok_or(SeError::Login(String::from("Failed to get fkey <input>")))?
-            .value()
             .attr("value")
             .ok_or(SeError::Login(String::from("Failed to get fkey value")))?
             .parse()
@@ -144,12 +198,11 @@ impl User {
             .text()
             .await?;
 
-        let document = Html::parse_document(&response);
-        let captcha = document.select(&Selector::parse("title").unwrap())
+        let document = Document::from(response.as_str());
+        let captcha = document.find(Name("title"))
             .next()
             .unwrap()
-            .text()
-            .collect::<String>();
+            .text();
         if captcha.contains("Human verification") {
             return Err(SeError::Login(String::from("Captcha required, wait about 5 minutes")));
         }
@@ -163,14 +216,13 @@ impl User {
             .text()
             .await?;
 
-        let document = Html::parse_document(&response);
-        let id_str = document.select(&Selector::parse(".topbar-menu-links").unwrap())
+        let document = Document::from(response.as_str());
+        let id_str = document.find(Class("topbar-menu-links"))
             .next()
             .unwrap()
-            .select(&Selector::parse("a").unwrap())
+            .find(Name("a"))
             .next()
             .unwrap()
-            .value()
             .attr("href")
             .unwrap();
         let id = id_str
